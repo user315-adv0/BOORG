@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "BOORG",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Scans bookmarks, fetches page metadata, extracts tags, and shows a tag cloud.",
   "action": {
     "default_popup": "popup.html"

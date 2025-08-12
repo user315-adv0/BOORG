@@ -2,6 +2,15 @@
 
 Minimal, fast Chrome MV3 extension that scans your bookmarks, fetches page metadata, extracts tags, and helps you organize links under a single `SORTED` folder.
 
+## Current Version: 0.2.0
+
+### What's New:
+- ✅ Independent sorting options (1-4) with proper logic
+- ✅ Flat mode dominates other options
+- ✅ No more Topics/Processed folders - only SORTED
+- ✅ Enhanced export with analytics and visualizations
+- ✅ Fixed canvas rendering and data handling
+
 ## Features
 
 - Scan all bookmarks and fetch title/description with timeouts and parallelism
@@ -70,5 +79,24 @@ Minimal, fast Chrome MV3 extension that scans your bookmarks, fetches page metad
 ---
 
 This is a minimal, pragmatic tool — no external services, no heavy dependencies.
+
+---
+
+## TODO / Roadmap
+
+### High Priority:
+- 🔧 **Fix sorting logic**: Ensure options 1-4 work independently and correctly
+- 🎨 **Complete export visualizations**: Fix remaining canvas issues, add more chart types
+- 🧪 **Test edge cases**: Empty data, malformed URLs, large bookmark sets
+
+### Medium Priority:
+- 📱 **Mobile optimization**: Better responsive design for export page
+- ⚡ **Performance**: Optimize large bookmark processing
+- 🔍 **Search**: Add search/filter in export analytics
+
+### Low Priority:
+- 🌐 **Internationalization**: Support for other languages
+- 📊 **More charts**: Timeline, domain distribution, etc.
+- 🎯 **Smart suggestions**: AI-powered category suggestions
 
 

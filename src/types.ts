@@ -45,7 +45,7 @@ export type PopupMessage =
   | { type: "SCAN_BOOKMARKS"; payload?: Partial<ScanOptions> }
   | { type: "EXPORT_CSV" }
   | { type: "SORT_INVALID" }
-  | { type: "CATALOGIZE_MEANING" }
+  // Removed CATALOGIZE_MEANING - now part of SORT_INVALID
   | { type: "PAUSE_SCAN" }
   | { type: "RESUME_SCAN" }
   | { type: "INTEGRATE_SORTED" };

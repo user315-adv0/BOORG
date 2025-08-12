@@ -219,32 +219,6 @@ function buildTagHierarchy(items, config = { maxLevel1: 12, maxLevel2: 8, maxLev
   }
   return { level1, level2, level3, docFreq };
 }
-function assignHierarchyPath(record, h) {
-  const tagsSorted = Array.from(new Set(record.tags)).sort(
-    (a, b) => (h.docFreq.get(b) ?? 0) - (h.docFreq.get(a) ?? 0)
-  );
-  let l1;
-  for (const t of tagsSorted) if (h.level1.includes(t)) {
-    l1 = t;
-    break;
-  }
-  if (!l1) return [safeHostname(record.url) ?? "Misc"];
-  const rest = tagsSorted.filter((t) => t !== l1);
-  let l2;
-  const l2List = h.level2.get(l1) ?? [];
-  for (const t of rest) if (l2List.includes(t)) {
-    l2 = t;
-    break;
-  }
-  if (!l2) return [l1];
-  const l3List = h.level3.get(`${l1}//${l2}`) ?? [];
-  let l3;
-  for (const t of rest) if (t !== l2 && l3List.includes(t)) {
-    l3 = t;
-    break;
-  }
-  return l3 ? [l1, l2, l3] : [l1, l2];
-}
 
 // src/storage.ts
 var Storage = class {
@@ -363,11 +337,18 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           sendPhase("SORT", "start");
           await removeInvalidRecords();
           const opts = await storage.getOptionsOrDefault(DEFAULT_OPTIONS);
-          if (opts.splitIntoFolders) {
-            if (opts.flatMode) await catalogizeFlat();
-            else await catalogizeByMeaning();
+          if (opts.flatMode) {
+            await catalogizeFlat({ applyLift: !!opts.liftToDomain, applyDedupe: !!opts.dedupe });
           } else {
-            sendStatus("Catalog step skipped (splitIntoFolders=false)");
+            if (opts.splitIntoFolders) {
+              await catalogizeByMeaningTop8();
+            } else {
+              if (opts.liftToDomain || opts.dedupe) {
+                await mirrorOriginalStructure({ applyLift: !!opts.liftToDomain, applyDedupe: !!opts.dedupe });
+              } else {
+                sendStatus("No organization selected - only invalid links removed");
+              }
+            }
           }
           sendDone("SORT");
         })().then(() => sendResponse({ ok: true })).catch((e) => sendResponse({ ok: false, error: String(e) })).finally(() => {
@@ -375,20 +356,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         });
         break;
       }
-      case "CATALOGIZE_MEANING": {
-        if (busyOp) {
-          sendResponse({ ok: false, error: `busy: ${busyOp}` });
-          break;
-        }
-        busyOp = "CATALOG";
-        catalogizeByMeaning().then(
-          () => sendResponse({ ok: true }),
-          (e) => sendResponse({ ok: false, error: String(e) })
-        ).finally(() => {
-          busyOp = null;
-        });
-        break;
-      }
+      // Removed CATALOGIZE_MEANING handler - now part of SORT_INVALID
       case "INTEGRATE_SORTED": {
         if (busyOp) {
           sendResponse({ ok: false, error: `busy: ${busyOp}` });
@@ -586,47 +554,23 @@ async function removeInvalidRecords() {
   await storage.setRecords(filtered);
   sendStatus(`SORT: removed invalid \u2014 ${removed}`);
 }
-async function catalogizeByMeaning() {
+async function catalogizeFlat(opts) {
   const records = await storage.getRecords();
-  const okItems = Object.values(records).filter((r) => r.ok);
-  const root = await getOrCreateSortedFolder();
-  const hierarchy = buildTagHierarchy(okItems, { maxLevel1: 12, maxLevel2: 8, maxLevel3: 6, minCount: 2 });
-  const pathToRecords = /* @__PURE__ */ new Map();
-  for (const r of okItems) {
-    const pathParts = assignHierarchyPath({ url: r.url, tags: r.tags }, hierarchy);
-    const path = pathParts.join("/");
-    const arr = pathToRecords.get(path) ?? [];
-    arr.push(r);
-    pathToRecords.set(path, arr);
+  let items = Object.values(records).filter((r) => r.ok);
+  if (opts.applyLift) items = items.map((r) => ({ ...r, url: normalizeToDomainRoot(r.url) }));
+  if (opts.applyDedupe) {
+    const seen = /* @__PURE__ */ new Set();
+    items = items.filter((r) => {
+      if (seen.has(r.url)) return false;
+      seen.add(r.url);
+      return true;
+    });
   }
-  let created = 0;
-  for (const [path, recs] of pathToRecords) {
-    const folder = await ensureNestedFolders(root.id, path.split("/"));
-    const existing = await chrome.bookmarks.getChildren(folder.id);
-    const existingUrls = new Set(existing.map((b) => b.url).filter(Boolean));
-    for (const r of recs) {
-      if (existingUrls.has(r.url)) continue;
-      await chrome.bookmarks.create({ parentId: folder.id, title: r.title || r.url, url: r.url });
-      created += 1;
-    }
-    sendStatus(`SORTED '${path}': ${recs.length} items`);
-  }
-  sendStatus(`SORT completed: added ${created} links`);
-  try {
-    const title = `CSV Export (SORTED) ${(/* @__PURE__ */ new Date()).toLocaleString()}`;
-    await saveCsvAndBookmark(root.id, title);
-    sendStatus(`CSV link added to 'SORTED'`);
-  } catch {
-  }
-}
-async function catalogizeFlat() {
-  const records = await storage.getRecords();
-  const okItems = Object.values(records).filter((r) => r.ok);
   const root = await getOrCreateSortedFolder();
   const existing = await chrome.bookmarks.getChildren(root.id);
   const existingUrls = new Set(existing.map((b) => b.url).filter(Boolean));
   let created = 0;
-  for (const r of okItems) {
+  for (const r of items) {
     if (existingUrls.has(r.url)) continue;
     await chrome.bookmarks.create({ parentId: root.id, title: r.title || r.url, url: r.url });
     created += 1;
@@ -638,17 +582,104 @@ async function catalogizeFlat() {
   } catch {
   }
 }
-async function ensureNestedFolders(parentId, segments) {
-  let currentParentId = parentId;
-  let last;
-  for (const seg of segments) {
-    const children = await chrome.bookmarks.getChildren(currentParentId);
-    let folder = children.find((c) => !c.url && c.title === seg);
-    if (!folder) folder = await chrome.bookmarks.create({ parentId: currentParentId, title: seg });
-    currentParentId = folder.id;
-    last = folder;
+async function mirrorOriginalStructure(opts) {
+  const tree = await chrome.bookmarks.getTree();
+  const records = await storage.getRecords();
+  const okSet = new Set(Object.values(records).filter((r) => r.ok).map((r) => r.url));
+  const rootSorted = await getOrCreateSortedFolder();
+  const structureRoot = await getOrCreateChildFolder(rootSorted.id, "STRUCTURE");
+  const folderCache = /* @__PURE__ */ new Map();
+  const existingCache = /* @__PURE__ */ new Map();
+  const globalSeen = /* @__PURE__ */ new Set();
+  const walk = async (node, path) => {
+    if (node.url) {
+      const originalUrl = node.url;
+      if (!okSet.has(originalUrl)) return;
+      const targetUrl = opts.applyLift ? normalizeToDomainRoot(originalUrl) : originalUrl;
+      if (opts.applyDedupe && globalSeen.has(targetUrl)) return;
+      globalSeen.add(targetUrl);
+      const folderPath = path.join("/");
+      let folder = folderCache.get(folderPath);
+      if (!folder) {
+        if (path.length > 0) {
+          let currentParent = structureRoot;
+          for (const segment of path) {
+            const children = await chrome.bookmarks.getChildren(currentParent.id);
+            let childFolder = children.find((c) => !c.url && c.title === segment);
+            if (!childFolder) {
+              childFolder = await chrome.bookmarks.create({ parentId: currentParent.id, title: segment });
+            }
+            currentParent = childFolder;
+          }
+          folder = currentParent;
+        } else {
+          folder = structureRoot;
+        }
+        folderCache.set(folderPath, folder);
+      }
+      let existing = existingCache.get(folder.id);
+      if (!existing) {
+        const children = await chrome.bookmarks.getChildren(folder.id);
+        existing = new Set(children.map((c) => c.url).filter(Boolean));
+        existingCache.set(folder.id, existing);
+      }
+      if (existing.has(targetUrl)) return;
+      await chrome.bookmarks.create({ parentId: folder.id, title: node.title || targetUrl, url: targetUrl });
+      existing.add(targetUrl);
+      return;
+    }
+    if (node.children) {
+      const nextPath = node.title ? [...path, node.title] : path;
+      for (const ch of node.children) await walk(ch, nextPath);
+    }
+  };
+  for (const root of tree) await walk(root, []);
+  sendStatus("STRUCTURE mirror updated under SORTED/STRUCTURE");
+}
+async function catalogizeByMeaningTop8() {
+  const records = await storage.getRecords();
+  const okItems = Object.values(records).filter((r) => r.ok);
+  const h = buildTagHierarchy(okItems, { maxLevel1: 7, maxLevel2: 1, maxLevel3: 1, minCount: 2 });
+  const top7 = h.level1;
+  const root = await getOrCreateSortedFolder();
+  const otherRoot = await getOrCreateChildFolder(root.id, "Other");
+  const topFolders = /* @__PURE__ */ new Map();
+  for (const t of top7) {
+    const f = await getOrCreateChildFolder(root.id, t);
+    topFolders.set(t, f);
   }
-  return last;
+  const existingCache = /* @__PURE__ */ new Map();
+  const getExistingSet = async (folderId) => {
+    let set = existingCache.get(folderId);
+    if (!set) {
+      const ch = await chrome.bookmarks.getChildren(folderId);
+      set = new Set(ch.map((c) => c.url).filter(Boolean));
+      existingCache.set(folderId, set);
+    }
+    return set;
+  };
+  let created = 0;
+  for (const r of okItems) {
+    let bestTag = null;
+    for (const tag of r.tags) {
+      if (top7.includes(tag)) {
+        bestTag = tag;
+        break;
+      }
+    }
+    const targetFolder = bestTag ? topFolders.get(bestTag) : otherRoot;
+    const existing = await getExistingSet(targetFolder.id);
+    if (existing.has(r.url)) continue;
+    await chrome.bookmarks.create({ parentId: targetFolder.id, title: r.title || r.url, url: r.url });
+    existing.add(r.url);
+    created += 1;
+  }
+  sendStatus(`SORTED: added ${created} links (Top7 + Other, flat)`);
+  try {
+    const title = `CSV Export (SORTED) ${(/* @__PURE__ */ new Date()).toLocaleString()}`;
+    await saveCsvAndBookmark(root.id, title);
+  } catch {
+  }
 }
 function sendStatus(text) {
   try {

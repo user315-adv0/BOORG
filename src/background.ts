@@ -95,11 +95,21 @@ chrome.runtime.onMessage.addListener((msg: PopupMessage, _sender, sendResponse) 
           sendPhase("SORT", "start");
           await removeInvalidRecords();
           const opts = await storage.getOptionsOrDefault(DEFAULT_OPTIONS);
-          if (opts.splitIntoFolders) {
-            if (opts.flatMode) await catalogizeFlat();
-            else await catalogizeByMeaning();
+          // Flat mode dominates: place everything flat under SORTED
+          if (opts.flatMode) {
+            await catalogizeFlat({ applyLift: !!opts.liftToDomain, applyDedupe: !!opts.dedupe });
           } else {
-            sendStatus("Catalog step skipped (splitIntoFolders=false)");
+            // 3) Tag-based categorization (Top7 + Other) - if enabled, skip STRUCTURE
+            if (opts.splitIntoFolders) {
+              await catalogizeByMeaningTop8();
+            } else {
+              // 1) Mirror original structure (apply lift/dedupe if requested) - only if no categorization
+              if (opts.liftToDomain || opts.dedupe) {
+                await mirrorOriginalStructure({ applyLift: !!opts.liftToDomain, applyDedupe: !!opts.dedupe });
+              } else {
+                sendStatus("No organization selected - only invalid links removed");
+              }
+            }
           }
           sendDone("SORT");
         })()
@@ -108,15 +118,7 @@ chrome.runtime.onMessage.addListener((msg: PopupMessage, _sender, sendResponse) 
           .finally(() => { busyOp = null; });
         break;
       }
-      case "CATALOGIZE_MEANING": {
-        if (busyOp) { sendResponse({ ok: false, error: `busy: ${busyOp}` }); break; }
-        busyOp = "CATALOG";
-        catalogizeByMeaning().then(
-          () => sendResponse({ ok: true }),
-          (e) => sendResponse({ ok: false, error: String(e) })
-        ).finally(() => { busyOp = null; });
-        break;
-      }
+      // Removed CATALOGIZE_MEANING handler - now part of SORT_INVALID
       case "INTEGRATE_SORTED": {
         if (busyOp) { sendResponse({ ok: false, error: `busy: ${busyOp}` }); break; }
         busyOp = "INTEGRATE";
@@ -250,46 +252,7 @@ async function processInBatches<T>(items: T[], parallel: number, worker: (item: 
   await Promise.all(runners);
 }
 
-async function ensureProcessedFolderAndPopulate(items: LinkRecord[]): Promise<number> {
-  const root = await getOrCreateProcessedFolder();
-  const byDomain = new Map<string, LinkRecord[]>();
-  for (const r of items) {
-    try {
-      const u = new URL(r.url);
-      const key = u.hostname;
-      const arr = byDomain.get(key) ?? [];
-      arr.push(r);
-      byDomain.set(key, arr);
-    } catch {}
-  }
-
-  let createdCount = 0;
-  for (const [domain, recs] of byDomain) {
-    const folder = await getOrCreateChildFolder(root.id, domain);
-
-    // fetch existing children to dedupe by URL
-    const existing = await chrome.bookmarks.getChildren(folder.id);
-    const existingUrls = new Set(existing.map((b) => b.url).filter(Boolean) as string[]);
-
-    for (const r of recs) {
-      if (existingUrls.has(r.url)) continue;
-      await chrome.bookmarks.create({ parentId: folder.id, title: r.title || r.url, url: r.url });
-      createdCount += 1;
-    }
-  }
-  return createdCount;
-}
-
-async function getOrCreateProcessedFolder(): Promise<chrome.bookmarks.BookmarkTreeNode> {
-  const search = await chrome.bookmarks.search({ title: "Processed" });
-  const found = search.find((n) => !n.url && n.title === "Processed");
-  if (found) return found;
-  // place under bookmarks bar if exists, else at root
-  const tree = await chrome.bookmarks.getTree();
-  const bar = findNodeById(tree, "1"); // Chrome bookmarks bar is usually id "1"
-  const parentId = bar?.id || tree[0].id;
-  return chrome.bookmarks.create({ parentId, title: "Processed" });
-}
+// Removed unused Processed folder functions
 
 function findNodeById(nodes: chrome.bookmarks.BookmarkTreeNode[], id: string): chrome.bookmarks.BookmarkTreeNode | undefined {
   const stack = [...nodes];
@@ -361,52 +324,21 @@ async function removeInvalidRecords(): Promise<void> {
   sendStatus(`SORT: removed invalid — ${removed}`);
 }
 
-async function catalogizeByMeaning(): Promise<void> {
-  // Build hierarchy and place under single root 'SORTED'
+// Removed catalogizeByMeaning - replaced by catalogizeByMeaningTop8
+
+async function catalogizeFlat(opts: { applyLift: boolean; applyDedupe: boolean }): Promise<void> {
   const records = await storage.getRecords();
-  const okItems = Object.values(records).filter((r) => r.ok);
-  const root = await getOrCreateSortedFolder();
-
-  // Build 3-level hierarchy from tags to reduce folder explosion
-  const hierarchy = buildTagHierarchy(okItems, { maxLevel1: 12, maxLevel2: 8, maxLevel3: 6, minCount: 2 });
-
-  // Map: path -> records[]
-  const pathToRecords = new Map<string, LinkRecord[]>();
-  for (const r of okItems) {
-    const pathParts = assignHierarchyPath({ url: r.url, tags: r.tags }, hierarchy);
-    const path = pathParts.join("/");
-    const arr = pathToRecords.get(path) ?? [];
-    arr.push(r); pathToRecords.set(path, arr);
+  let items = Object.values(records).filter((r) => r.ok);
+  if (opts.applyLift) items = items.map((r) => ({ ...r, url: normalizeToDomainRoot(r.url) }));
+  if (opts.applyDedupe) {
+    const seen = new Set<string>();
+    items = items.filter((r) => { if (seen.has(r.url)) return false; seen.add(r.url); return true; });
   }
-
-  let created = 0;
-  for (const [path, recs] of pathToRecords) {
-    const folder = await ensureNestedFolders(root.id, path.split("/"));
-    const existing = await chrome.bookmarks.getChildren(folder.id);
-    const existingUrls = new Set(existing.map((b) => b.url).filter(Boolean) as string[]);
-    for (const r of recs) {
-      if (existingUrls.has(r.url)) continue;
-      await chrome.bookmarks.create({ parentId: folder.id, title: r.title || r.url, url: r.url });
-      created += 1;
-    }
-    sendStatus(`SORTED '${path}': ${recs.length} items`);
-  }
-  sendStatus(`SORT completed: added ${created} links`);
-  try {
-    const title = `CSV Export (SORTED) ${new Date().toLocaleString()}`;
-    await saveCsvAndBookmark(root.id, title);
-    sendStatus(`CSV link added to 'SORTED'`);
-  } catch {}
-}
-
-async function catalogizeFlat(): Promise<void> {
-  const records = await storage.getRecords();
-  const okItems = Object.values(records).filter((r) => r.ok);
   const root = await getOrCreateSortedFolder();
   const existing = await chrome.bookmarks.getChildren(root.id);
   const existingUrls = new Set(existing.map((b) => b.url).filter(Boolean) as string[]);
   let created = 0;
-  for (const r of okItems) {
+  for (const r of items) {
     if (existingUrls.has(r.url)) continue;
     await chrome.bookmarks.create({ parentId: root.id, title: r.title || r.url, url: r.url });
     created += 1;
@@ -418,20 +350,122 @@ async function catalogizeFlat(): Promise<void> {
   } catch {}
 }
 
+async function mirrorOriginalStructure(opts: { applyLift: boolean; applyDedupe: boolean }): Promise<void> {
+  // Recreate original folder hierarchy under SORTED/STRUCTURE with processed links
+  const tree = await chrome.bookmarks.getTree();
+  const records = await storage.getRecords();
+  const okSet = new Set(Object.values(records).filter((r) => r.ok).map((r) => r.url));
+  const rootSorted = await getOrCreateSortedFolder();
+  const structureRoot = await getOrCreateChildFolder(rootSorted.id, "STRUCTURE");
+
+  const folderCache = new Map<string, chrome.bookmarks.BookmarkTreeNode>(); // path -> node
+  const existingCache = new Map<string, Set<string>>(); // folderId -> existingUrls
+  const globalSeen = new Set<string>(); // for dedupe across whole mirror
+
+  const walk = async (node: chrome.bookmarks.BookmarkTreeNode, path: string[]) => {
+    if (node.url) {
+      const originalUrl = node.url;
+      if (!okSet.has(originalUrl)) return; // skip invalid
+      const targetUrl = opts.applyLift ? normalizeToDomainRoot(originalUrl) : originalUrl;
+      if (opts.applyDedupe && globalSeen.has(targetUrl)) return;
+      globalSeen.add(targetUrl);
+
+      // ensure path under STRUCTURE
+      const folderPath = path.join("/");
+      let folder = folderCache.get(folderPath);
+      if (!folder) {
+        // Create nested folders if path has multiple segments
+        if (path.length > 0) {
+          let currentParent = structureRoot;
+          for (const segment of path) {
+            const children = await chrome.bookmarks.getChildren(currentParent.id);
+            let childFolder = children.find((c) => !c.url && c.title === segment);
+            if (!childFolder) {
+              childFolder = await chrome.bookmarks.create({ parentId: currentParent.id, title: segment });
+            }
+            currentParent = childFolder;
+          }
+          folder = currentParent;
+        } else {
+          folder = structureRoot;
+        }
+        folderCache.set(folderPath, folder);
+      }
+      let existing = existingCache.get(folder.id);
+      if (!existing) {
+        const children = await chrome.bookmarks.getChildren(folder.id);
+        existing = new Set(children.map((c) => c.url).filter(Boolean) as string[]);
+        existingCache.set(folder.id, existing);
+      }
+      if (existing.has(targetUrl)) return;
+      await chrome.bookmarks.create({ parentId: folder.id, title: node.title || targetUrl, url: targetUrl });
+      existing.add(targetUrl);
+      return;
+    }
+    if (node.children) {
+      const nextPath = node.title ? [...path, node.title] : path;
+      for (const ch of node.children) await walk(ch, nextPath);
+    }
+  };
+  for (const root of tree) await walk(root, []);
+  sendStatus("STRUCTURE mirror updated under SORTED/STRUCTURE");
+}
+
+async function catalogizeByMeaningTop8(): Promise<void> {
+  // Build Top-7 tags + Other, then place records up to 3 levels deep
+  const records = await storage.getRecords();
+  const okItems = Object.values(records).filter((r) => r.ok);
+  const h = buildTagHierarchy(okItems, { maxLevel1: 7, maxLevel2: 1, maxLevel3: 1, minCount: 2 });
+  const top7 = h.level1; // already limited to 7
+  const root = await getOrCreateSortedFolder();
+  const otherRoot = await getOrCreateChildFolder(root.id, "Other");
+
+  // Pre-create top category folders
+  const topFolders = new Map<string, chrome.bookmarks.BookmarkTreeNode>();
+  for (const t of top7) {
+    const f = await getOrCreateChildFolder(root.id, t);
+    topFolders.set(t, f);
+  }
+
+  // Cache existing urls per folder to avoid duplicates
+  const existingCache = new Map<string, Set<string>>();
+  const getExistingSet = async (folderId: string) => {
+    let set = existingCache.get(folderId);
+    if (!set) {
+      const ch = await chrome.bookmarks.getChildren(folderId);
+      set = new Set(ch.map((c) => c.url).filter(Boolean) as string[]);
+      existingCache.set(folderId, set);
+    }
+    return set;
+  };
+
+  let created = 0;
+  for (const r of okItems) {
+    // Simple: find best matching top tag, or put in Other
+    let bestTag: string | null = null;
+    for (const tag of r.tags) {
+      if (top7.includes(tag)) {
+        bestTag = tag;
+        break;
+      }
+    }
+    const targetFolder = bestTag ? topFolders.get(bestTag)! : otherRoot;
+    const existing = await getExistingSet(targetFolder.id);
+    if (existing.has(r.url)) continue;
+    await chrome.bookmarks.create({ parentId: targetFolder.id, title: r.title || r.url, url: r.url });
+    existing.add(r.url);
+    created += 1;
+  }
+  sendStatus(`SORTED: added ${created} links (Top7 + Other, flat)`);
+  try {
+    const title = `CSV Export (SORTED) ${new Date().toLocaleString()}`;
+    await saveCsvAndBookmark(root.id, title);
+  } catch {}
+}
+
 // removed Topics root in favor of single 'SORTED' root
 
-async function ensureNestedFolders(parentId: string, segments: string[]): Promise<chrome.bookmarks.BookmarkTreeNode> {
-  let currentParentId = parentId;
-  let last: chrome.bookmarks.BookmarkTreeNode | undefined;
-  for (const seg of segments) {
-    const children = await chrome.bookmarks.getChildren(currentParentId);
-    let folder = children.find((c) => !c.url && c.title === seg);
-    if (!folder) folder = await chrome.bookmarks.create({ parentId: currentParentId, title: seg });
-    currentParentId = folder.id;
-    last = folder;
-  }
-  return last!;
-}
+// Removed ensureNestedFolders - no longer needed
 
 // removed duplicate safeHostname (exists in utils)
 
