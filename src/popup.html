@@ -1,0 +1,45 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>BOORG</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <div class="noise"></div>
+    <header>
+      <h1>BOORG</h1>
+      <div class="controls">
+        <div class="btn-row">
+          <button id="scan" class="progressable">Scan</button>
+          <button id="sort" class="progressable">Sort</button>
+          <button id="integrate" class="progressable">Integrate</button>
+          <button id="export" class="progressable small">Export</button>
+        </div>
+        <div class="controls-right">
+          <button id="pauseToggle" class="icon" title="Pause/Resume">⏯</button>
+          <button id="resetBtn" class="icon" title="Reset">↻</button>
+          <button id="settingsBtn" class="icon" title="Settings">⚙️</button>
+        </div>
+      </div>
+      <div id="settings" class="settings-panel" hidden>
+        <label><input type="checkbox" id="opt-lift"> Simplify deep links to domain root</label><br/>
+        <label><input type="checkbox" id="opt-dedupe"> Remove duplicates</label><br/>
+        <label><input type="checkbox" id="opt-split" checked> Split into folders (SORTED)</label><br/>
+        <label><input type="checkbox" id="opt-flat"> Flat mode (no subfolders)</label>
+      </div>
+      <pre id="log" class="log" aria-live="polite"></pre>
+    </header>
+
+    <main>
+      <section>
+        <ul id="list" class="list"></ul>
+      </section>
+    </main>
+
+    <script src="popup.js"></script>
+  </body>
+  </html>
+
+

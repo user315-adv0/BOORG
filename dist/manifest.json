@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "BOORG",
+  "version": "0.1.0",
+  "description": "Scans bookmarks, fetches page metadata, extracts tags, and shows a tag cloud.",
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "permissions": [
+    "bookmarks",
+    "storage",
+    "downloads"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ]
+}
+

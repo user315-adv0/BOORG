@@ -1,0 +1,34 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BOORG Export</title>
+    <style>
+      :root{color-scheme:dark}
+      body { font: 14px/1.55 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding: 20px; margin:0;
+        background: radial-gradient(1200px 800px at 20% 0%, #0b0d2a 0%, #0a0720 40%, #050311 100%);
+        color:#e6e7ff }
+      .card{border:1px solid rgba(255,255,255,.18); border-radius:14px; padding:14px; background:linear-gradient(160deg, rgba(255,255,255,.08), rgba(255,255,255,.03)); box-shadow:0 8px 30px rgba(0,0,0,.45)}
+      textarea { width: 100%; min-height: 320px; background:transparent; color:#e6e7ff; border:none; outline:none }
+      .row { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; }
+      button { padding: 9px 12px; border-radius: 12px; border: 1px solid rgba(255,255,255,.18);
+        background: linear-gradient(160deg, rgba(255,255,255,.10), rgba(255,255,255,.04)); color: #e6e7ff;
+        cursor: pointer; box-shadow: 0 0 24px rgba(255,43,214,.35), 0 0 48px rgba(0,225,255,.2);
+      }
+      .meta { color: #a9abcf; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div class="row">
+        <button id="download">Download CSV</button>
+        <span class="meta" id="meta"></span>
+      </div>
+      <textarea id="csv" readonly></textarea>
+    </div>
+    <script src="export.js"></script>
+  </body>
+ </html>
+
+
